@@ -8,6 +8,14 @@
 - optional media downloading through `gallery-dl` and `yt-dlp`
 - a simple GUI launcher
 
+## Main Usage
+
+Primary workflow (download GUI):
+
+```bash
+./simp gui
+```
+
 ## Requirements
 
 - Python 3.10+
@@ -28,7 +36,8 @@ python -m playwright install chromium
 
 - CLI wrapper: `./simp`
 - Direct CLI: `python3 cli.py`
-- GUI wrapper: `./simp-gui` or `./simp gui`
+- Main GUI command: `./simp gui`
+- Alternate GUI wrapper: `./simp-gui`
 
 ## GUI Screenshots
 
@@ -40,7 +49,9 @@ Busy GUI canvas:
 
 ![Busy GUI canvas](demo/busy%20gui%20canvas.png)
 
-## Common Usage
+## Advanced CLI Usage
+
+If you prefer terminal workflows instead of the GUI, use the commands below.
 
 Quick scrape one URL:
 
