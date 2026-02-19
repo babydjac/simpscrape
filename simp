@@ -1,0 +1,71 @@
+#!/bin/sh
+set -e
+
+SOURCE_PATH="$0"
+while [ -h "$SOURCE_PATH" ]; do
+  SOURCE_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE_PATH")" && pwd)
+  SOURCE_TARGET=$(readlink "$SOURCE_PATH")
+  case "$SOURCE_TARGET" in
+    /*) SOURCE_PATH="$SOURCE_TARGET" ;;
+    *) SOURCE_PATH="$SOURCE_DIR/$SOURCE_TARGET" ;;
+  esac
+done
+SCRIPT_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE_PATH")" && pwd)
+
+if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
+else
+  PYTHON_BIN="python3"
+fi
+
+if $PYTHON_BIN - <<'PY'
+import importlib.util
+missing = []
+for mod in ("typer", "playwright"):
+    if importlib.util.find_spec(mod) is None:
+        missing.append(mod)
+if missing:
+    raise SystemExit(1)
+PY
+then
+  true
+else
+  $PYTHON_BIN -m pip install typer playwright
+  $PYTHON_BIN -m playwright install chromium
+fi
+
+if $PYTHON_BIN - <<'PY'
+import os
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    exe = p.chromium.executable_path
+if not os.path.exists(exe):
+    raise SystemExit(1)
+PY
+then
+  true
+else
+  $PYTHON_BIN -m playwright install chromium
+fi
+
+if [ "$#" -eq 0 ]; then
+  exec "$PYTHON_BIN" "$SCRIPT_DIR/cli.py" simp "$@"
+fi
+
+case "$1" in
+  gui|universal-gui)
+    shift
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/universal_gui.py" "$@"
+    ;;
+  run|simp|login|universal)
+    SUBCOMMAND="$1"
+    shift
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/cli.py" "$SUBCOMMAND" "$@"
+    ;;
+  --help|-h|help)
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/cli.py" --help
+    ;;
+  *)
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/cli.py" simp "$@"
+    ;;
+esac

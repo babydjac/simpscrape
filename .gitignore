@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE/editor
+.idea/
+.vscode/
+
+# Local auth/session artifacts
+cooks.txt
+simpcity-state.json
+
+# Runtime outputs
+simp-output/
+simp-output.json
+universal-output/
+downloads/
+*.sqlite
+*.db
