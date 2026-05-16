@@ -2,8 +2,8 @@
 
 A scraper toolkit for forum-style media threads. It crawls a thread, discovers
 embedded media links, resolves them across hosts, then hands the URLs off to
-`[gallery-dl](https://github.com/mikf/gallery-dl)` and `[yt-dlp](https://github.com/yt-dlp/yt-dlp)`
-for the actual downloading.
+[gallery-dl](https://github.com/mikf/gallery-dl) and
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) for the actual downloading.
 
 It ships with three frontends:
 
@@ -19,22 +19,22 @@ interstitials (e.g. simpcity.cr) don't stop a run.
 
 Idle state — paste a URL, pick a profile, hit Run:
 
-Idle GUI
+<img src="demo/02-idle.png" alt="Idle GUI" width="900">
 
 Mid-crawl — live thread preview, stage rail (Crawl → Discover → Resolve →
 Download → Finalize), running activity feed, downloads drawer:
 
-Busy GUI
+<img src="demo/04-busy.png" alt="Busy GUI" width="900">
 
 Cookies prompt at first launch — pick a Netscape `cookies.txt` or Playwright
 `storage_state.json` from your already-logged-in browser session:
 
-Cookies modal
+<img src="demo/01-cookies-modal.png" alt="Cookies modal" width="900">
 
 Settings modal — performer/folder, concurrency, auth files, Chrome
 attach options:
 
-Settings modal
+<img src="demo/03-settings-modal.png" alt="Settings modal" width="900">
 
 ## Quick start
 
@@ -153,7 +153,7 @@ python3 cli.py universal "https://example.com/thread/123" \
 
 The Chrome extension bridge in `chrome_extension/` is the no-config option:
 keep simpscrape's storage state in sync with normal Chrome logins by clicking
-"Track this site" from the popup. See `[chrome_extension/README.md](chrome_extension/README.md)`
+"Track this site" from the popup. See [chrome_extension/README.md](chrome_extension/README.md)
 and:
 
 ```bash
