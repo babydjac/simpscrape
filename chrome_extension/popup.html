@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SimpScrape Auth Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup">
+    <header class="hero">
+      <p class="eyebrow">SimpScrape</p>
+      <h1>Chrome Auth Bridge</h1>
+      <p class="sub">Track the sites you use in Chrome and keep matching SimpScrape state files updated automatically.</p>
+    </header>
+
+    <section class="card">
+      <div class="card-title-row">
+        <h2>Native Host</h2>
+        <button id="btn-ping" class="ghost" type="button">Check</button>
+      </div>
+      <p id="host-status" class="status neutral">Not checked yet.</p>
+    </section>
+
+    <section class="card">
+      <h2>Current Tab</h2>
+      <p id="current-origin" class="mono muted">No active http(s) tab</p>
+      <div class="actions">
+        <button id="btn-track-current" type="button">Track This Site</button>
+        <button id="btn-sync-current" class="ghost" type="button">Sync Now</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Add Site</h2>
+      <form id="manual-form">
+        <input id="manual-origin" type="text" placeholder="simpcity.cr or https://simpcity.cr" autocomplete="off">
+        <button type="submit">Track Site</button>
+      </form>
+      <p class="hint">Chrome will ask for access to each site the first time you track it.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-title-row">
+        <h2>Tracked Sites</h2>
+        <button id="btn-refresh" class="ghost" type="button">Refresh</button>
+      </div>
+      <div id="tracked-sites" class="site-list empty">No tracked sites yet.</div>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

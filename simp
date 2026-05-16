@@ -11,12 +11,14 @@ while [ -h "$SOURCE_PATH" ]; do
   esac
 done
 SCRIPT_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE_PATH")" && pwd)
+VENV_DIR="$SCRIPT_DIR/.venv"
 
-if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
-  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
-else
-  PYTHON_BIN="python3"
+# Keep dependencies isolated from Homebrew's externally managed Python.
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+  python3 -m venv "$VENV_DIR"
 fi
+
+PYTHON_BIN="$VENV_DIR/bin/python"
 
 if $PYTHON_BIN - <<'PY'
 import importlib.util
@@ -30,7 +32,7 @@ PY
 then
   true
 else
-  $PYTHON_BIN -m pip install typer playwright
+  $PYTHON_BIN -m pip install -r "$SCRIPT_DIR/requirements.txt"
   $PYTHON_BIN -m playwright install chromium
 fi
 
@@ -55,9 +57,13 @@ fi
 case "$1" in
   gui|universal-gui)
     shift
-    exec "$PYTHON_BIN" "$SCRIPT_DIR/universal_gui.py" "$@"
+    if [ -d "$SCRIPT_DIR/gui/node_modules/electron" ]; then
+      exec "$SCRIPT_DIR/gui/node_modules/.bin/electron" "$SCRIPT_DIR/gui" "$@"
+    else
+      exec "$PYTHON_BIN" "$SCRIPT_DIR/universal_gui.py" "$@"
+    fi
     ;;
-  run|simp|login|universal)
+  run|simp|login|universal|chrome-bridge-install|chrome-bridge-info)
     SUBCOMMAND="$1"
     shift
     exec "$PYTHON_BIN" "$SCRIPT_DIR/cli.py" "$SUBCOMMAND" "$@"

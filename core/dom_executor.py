@@ -23,8 +23,11 @@ class DomExecutor:
     def get_page_url(self) -> str:
         return self.driver.get_page_url()
 
-    def wait_for_idle(self, timeout_ms: int = 30000):
-        self.driver.wait_for_idle(timeout_ms=timeout_ms)
+    def wait_for_idle(self, timeout_ms: int = 30000, *, full_content_wait: bool = True):
+        self.driver.wait_for_idle(timeout_ms=timeout_ms, full_content_wait=full_content_wait)
+
+    def capture_preview(self) -> str:
+        return self.driver.capture_preview()
 
     def close(self):
         self.driver.close()

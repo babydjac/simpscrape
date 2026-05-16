@@ -8,14 +8,23 @@ import json
 from pathlib import Path
 import re
 import shlex
+import time
 from typing import Any, Callable, Optional, Sequence
 from urllib.parse import urlparse
 
+from core.browser_config import chrome_session_enabled
 from core.crawl_controller import CrawlConfig, CrawlController
 from core.dom_executor import DomExecutor
 from core.link_resolvers import ResolvedLink, build_password_hints, resolve_links_bulk
 from core.sitemap_loader import load_sitemap_payload
-from core.universal_downloader import DownloadConfig, download_urls, looks_like_direct_media_url
+from core.universal_downloader import (
+    DEFAULT_USER_AGENT,
+    DownloadConfig,
+    DownloadResult,
+    classify_download_output_path,
+    download_urls,
+    looks_like_direct_media_url,
+)
 from core.url_discovery import discover_urls, normalized_host
 from drivers.playwright_driver import PlaywrightDriver
 from output.json_writer import write_json
@@ -57,6 +66,7 @@ class PipelineConfig:
     cookies: Optional[Path] = None
     nav_timeout_ms: int = 60000
     idle_timeout_ms: int = 5000
+    emit_browser_preview: bool = False
     download_workers: int = 4
     attempts: int = 3
     retry_delay: float = 6.0
@@ -70,6 +80,26 @@ class PipelineConfig:
     emit_resolve_progress: bool = False
     emit_download_progress: bool = False
     write_run_manifest: bool = True
+    fail_fast: bool = False
+    strict_url_validation: bool = False
+    normalize_urls: bool = True
+    skip_existing_downloads: bool = False
+    user_agent: Optional[str] = None
+    download_timeout_sec: int = 45
+    # fast | balanced | deep — adjusts delays, retries, and discovery depth.
+    capture_profile: str = "balanced"
+    # When True, create workspace/runs/<timestamp>_<label>/ with _meta + downloads/.
+    run_scoped_outputs: bool = False
+    run_label: str = ""
+    # Lay out files under download_root/by-host and download_root/by-type.
+    structured_downloads: bool = False
+    chrome_cdp_url: Optional[str] = None
+    chrome_user_data_dir: Optional[Path] = None
+    chrome_profile_directory: str = "Default"
+    # When set, post-interstitial-dismissal storage_state is persisted here so
+    # subsequent runs skip the gate. Defaults to the loaded storage_state path
+    # when one is available; CLI / GUI fill this in.
+    storage_state_save_path: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -108,7 +138,103 @@ class PipelineStopped(PipelineError):
     pass
 
 
+def _safe_run_segment(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in (value or "").strip()) or "run"
+
+
+def normalize_capture_profile(raw: Optional[str]) -> str:
+    key = (raw or "balanced").strip().lower()
+    if key in ("fast", "balanced", "deep"):
+        return key
+    return "balanced"
+
+
+def apply_capture_profile_mutate(config: PipelineConfig) -> bool:
+    """Apply crawl/download tuning for the selected profile. Returns whether deep URL discovery is enabled."""
+    profile = normalize_capture_profile(getattr(config, "capture_profile", None))
+    config.capture_profile = profile
+    if profile == "fast":
+        config.delay_ms = max(0, min(int(config.delay_ms), 220))
+        config.attempts = max(1, min(int(config.attempts), 2))
+        config.retry_delay = max(0.0, min(float(config.retry_delay), 3.5))
+        config.resolve_workers = max(1, min(int(config.resolve_workers), 12))
+    elif profile == "deep":
+        config.attempts = max(int(config.attempts), 4)
+        config.retry_delay = max(float(config.retry_delay), 5.0)
+        config.idle_timeout_ms = max(int(config.idle_timeout_ms), 6500)
+        if config.max_pages is not None:
+            config.max_pages = min(600, max(int(config.max_pages), int(config.max_pages * 2)))
+    return profile == "deep"
+
+
+def expand_run_workspace_if_needed(config: PipelineConfig, started_at_dt: datetime) -> None:
+    if not bool(getattr(config, "run_scoped_outputs", False)):
+        return
+    base = config.workspace
+    label = getattr(config, "run_label", "") or base.name or "run"
+    slug = _safe_run_segment(str(label))
+    stamp = started_at_dt.strftime("%Y%m%d-%H%M%S")
+    run_dir = base / "runs" / f"{stamp}_{slug}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config.workspace = run_dir
+    config.metadata_dir = run_dir / "_meta"
+    config.download_root = run_dir / "downloads"
+
+
+def write_download_index_manifests(metadata_dir: Path, results: Sequence[DownloadResult]) -> None:
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    by_host: dict[str, dict[str, Any]] = {}
+    by_type: dict[str, list[str]] = {k: [] for k in ("image", "video", "archive", "other")}
+    failures: list[dict[str, Any]] = []
+    for item in results:
+        h = item.host or "unknown"
+        slot = by_host.setdefault(h, {"success": 0, "failure": 0, "items": []})
+        slot["items"].append(
+            {
+                "url": item.url,
+                "success": item.success,
+                "method": item.method,
+                "output_path": item.output_path,
+                "detail": item.detail,
+            }
+        )
+        if item.success:
+            slot["success"] += 1
+        else:
+            slot["failure"] += 1
+            failures.append(
+                {"url": item.url, "host": item.host, "detail": item.detail, "method": item.method}
+            )
+        if item.success and item.output_path:
+            bucket = classify_download_output_path(Path(item.output_path))
+            by_type.setdefault(bucket, []).append(str(item.output_path))
+
+    (metadata_dir / "index_by_host.json").write_text(
+        json.dumps(by_host, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+    (metadata_dir / "index_by_type.json").write_text(
+        json.dumps(by_type, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+    (metadata_dir / "index_failures.json").write_text(
+        json.dumps(failures, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+
 def template_sitemap(url: str) -> dict[str, Any]:
+    if is_simptown_thread_url(url):
+        return _simptown_template_sitemap(url)
+    return _xenforo_template_sitemap(url)
+
+
+def is_simptown_thread_url(url: str) -> bool:
+    host = normalized_host(url)
+    return host == "simptown.su" or host.endswith(".simptown.su")
+
+
+def _xenforo_template_sitemap(url: str) -> dict[str, Any]:
     return {
         "_id": "site",
         "startUrl": [url],
@@ -250,6 +376,134 @@ def template_sitemap(url: str) -> dict[str, Any]:
     }
 
 
+def _simptown_template_sitemap(url: str) -> dict[str, Any]:
+    return {
+        "_id": "site",
+        "startUrl": [url],
+        "selectors": [
+            {
+                "id": "title",
+                "parentSelectors": ["_root"],
+                "type": "SelectorText",
+                "selector": "h2.thread-title",
+                "multiple": False,
+                "regex": "",
+            },
+            {
+                "id": "next_page",
+                "parentSelectors": ["_root", "next_page"],
+                "type": "SelectorLink",
+                "selector": ".pagination-wrapper.pagination-pos-top .pagination-content > button[data-pagination]:last-of-type",
+                "multiple": False,
+                "extractAttribute": "data-pagination",
+            },
+            {
+                "id": "posts",
+                "parentSelectors": ["_root", "next_page"],
+                "type": "SelectorElement",
+                "selector": "div.thread-post",
+                "multiple": True,
+            },
+            {
+                "id": "post_id",
+                "parentSelectors": ["posts"],
+                "type": "SelectorElementAttribute",
+                "selector": ".thread-post",
+                "multiple": False,
+                "extractAttribute": "data-postid",
+            },
+            {
+                "id": "post_date",
+                "parentSelectors": ["posts"],
+                "type": "SelectorText",
+                "selector": "div.t-post-content-info > div.grow",
+                "multiple": False,
+                "regex": "",
+            },
+            {
+                "id": "post_author",
+                "parentSelectors": ["posts"],
+                "type": "SelectorText",
+                "selector": "span.tp-username",
+                "multiple": False,
+                "regex": "",
+            },
+            {
+                "id": "post_author_id",
+                "parentSelectors": ["posts"],
+                "type": "SelectorElementAttribute",
+                "selector": "span.tp-username",
+                "multiple": False,
+                "extractAttribute": "data-user",
+            },
+            {
+                "id": "post_content",
+                "parentSelectors": ["posts"],
+                "type": "SelectorText",
+                "selector": "div.bbContent",
+                "multiple": False,
+                "regex": "\\s*\\n\\s*",
+            },
+            {
+                "id": "quotes",
+                "parentSelectors": ["posts"],
+                "type": "SelectorText",
+                "selector": "div.bbContent blockquote, div.bbContent .bbCodeBlock--quote",
+                "multiple": True,
+                "regex": "",
+            },
+            {
+                "id": "links",
+                "parentSelectors": ["posts"],
+                "type": "SelectorElementAttribute",
+                "selector": "div.bbContent a",
+                "multiple": True,
+                "extractAttribute": "href",
+            },
+            {
+                "id": "images",
+                "parentSelectors": ["posts"],
+                "type": "SelectorElementAttribute",
+                "selector": "div.bbContent a:has(img.bbImage)",
+                "multiple": True,
+                "extractAttribute": "href",
+            },
+            {
+                "id": "videos",
+                "parentSelectors": ["posts"],
+                "type": "SelectorElementAttribute",
+                "selector": "div.bbContent video source, div.bbContent video",
+                "multiple": True,
+                "extractAttribute": "src",
+            },
+            {
+                "id": "iframes",
+                "parentSelectors": ["posts"],
+                "type": "SelectorElementAttribute",
+                "selector": "div.bbContent iframe",
+                "multiple": True,
+                "extractAttribute": "src",
+            },
+            {
+                "id": "embeds",
+                "parentSelectors": ["posts"],
+                "type": "SelectorElementAttribute",
+                "selector": "div.bbContent [data-s9e-mediaembed-iframe]",
+                "multiple": True,
+                "extractAttribute": "data-s9e-mediaembed-iframe",
+            },
+            {
+                "id": "reaction_score",
+                "parentSelectors": ["posts"],
+                "type": "SelectorText",
+                "selector": "div.t-post-content-reactions a.reactors",
+                "multiple": False,
+                "regex": "\\d+",
+            },
+        ],
+    }
+
+
 def parse_cli_args(raw: str, option_name: str) -> list[str]:
     if not raw.strip():
         return []
@@ -285,17 +539,48 @@ def load_cookies(cookie_file: Path) -> list[dict[str, Any]]:
         if len(parts) != 7:
             continue
         domain, _flag, path, secure, expiry, name, value = parts
+        expires = int(expiry) if expiry.isdigit() else -1
         cookies.append(
             {
                 "domain": domain,
                 "path": path,
                 "secure": secure.lower() == "true",
-                "expires": int(expiry) if expiry.isdigit() else -1,
+                "expires": expires if expires > 0 else -1,
                 "name": name,
                 "value": value,
             }
         )
     return cookies
+
+
+def _cookie_identity(cookie: dict[str, Any]) -> tuple[str, str, str]:
+    name = str(cookie.get("name") or "")
+    domain = str(cookie.get("domain") or "").lstrip(".").lower()
+    path = str(cookie.get("path") or "/")
+    return name, domain, path
+
+
+def _filter_storage_state_cookie_overrides(
+    cookies: list[dict[str, Any]],
+    storage_state: Optional[Path],
+) -> list[dict[str, Any]]:
+    if not cookies or not storage_state:
+        return cookies
+    try:
+        payload = json.loads(storage_state.read_text(encoding="utf-8"))
+    except Exception:
+        return cookies
+    state_cookies = payload.get("cookies") if isinstance(payload, dict) else None
+    if not isinstance(state_cookies, list):
+        return cookies
+    protected = {
+        _cookie_identity(cookie)
+        for cookie in state_cookies
+        if isinstance(cookie, dict) and cookie.get("name")
+    }
+    if not protected:
+        return cookies
+    return [cookie for cookie in cookies if _cookie_identity(cookie) not in protected]
 
 
 def crawl_records(
@@ -307,19 +592,61 @@ def crawl_records(
     cookies_path: Optional[Path],
     nav_timeout_ms: int,
     idle_timeout_ms: int,
+    java_script_enabled: bool = True,
+    page_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    user_agent: Optional[str] = None,
+    emit_browser_preview: bool = False,
+    chrome_cdp_url: Optional[str] = None,
+    chrome_user_data_dir: Optional[Path] = None,
+    chrome_profile_directory: str = "Default",
+    storage_state_save_path: Optional[Path] = None,
 ) -> list[dict[str, Any]]:
-    cookies = load_cookies(cookies_path) if cookies_path else None
-    driver = PlaywrightDriver(
-        headless=headless,
-        storage_state=str(storage_state) if storage_state else None,
-        cookies=cookies,
-    )
+    cookies = load_cookies(cookies_path) if cookies_path else []
+    cookies = _filter_storage_state_cookie_overrides(cookies, storage_state)
+    wants_chrome_session = chrome_session_enabled(chrome_cdp_url, chrome_user_data_dir)
+    has_auth_fallback = bool(storage_state or cookies)
+    profile_fallback_dir: Optional[str] = None
+    if chrome_user_data_dir and (not chrome_cdp_url or not has_auth_fallback):
+        # When a live CDP attach is requested and we already have saved auth available,
+        # prefer the saved auth fallback over launching a second browser on the real profile.
+        profile_fallback_dir = str(chrome_user_data_dir)
+    driver = None
+    if wants_chrome_session:
+        try:
+            driver = PlaywrightDriver(
+                headless=headless,
+                storage_state=None,
+                user_agent=user_agent or DEFAULT_USER_AGENT,
+                cookies=None,
+                java_script_enabled=java_script_enabled,
+                chrome_cdp_url=chrome_cdp_url,
+                chrome_user_data_dir=profile_fallback_dir,
+                chrome_profile_directory=chrome_profile_directory,
+            )
+        except RuntimeError:
+            if not has_auth_fallback:
+                raise
+
+    if driver is None:
+        driver = PlaywrightDriver(
+            headless=headless,
+            storage_state=str(storage_state) if storage_state else None,
+            user_agent=user_agent or DEFAULT_USER_AGENT,
+            cookies=cookies or None,
+            java_script_enabled=java_script_enabled,
+            chrome_cdp_url=None if wants_chrome_session else chrome_cdp_url,
+            chrome_user_data_dir=None if wants_chrome_session or chrome_user_data_dir is None else str(chrome_user_data_dir),
+            chrome_profile_directory=chrome_profile_directory,
+        )
     dom = DomExecutor(driver)
     config = CrawlConfig(
         delay_ms=delay_ms,
         max_pages=max_pages,
         nav_timeout_ms=nav_timeout_ms,
         idle_timeout_ms=idle_timeout_ms,
+        page_callback=page_callback,
+        emit_browser_preview=emit_browser_preview,
+        storage_state_save_path=storage_state_save_path,
     )
     try:
         controller = CrawlController(dom, sitemap_model, config)
@@ -383,8 +710,13 @@ def run_universal_pipeline(
     _validate_config(config)
     callback = on_event or (lambda _event: None)
     stop_callback = should_stop or (lambda: False)
-    started_at = _utc_timestamp()
+    started_at_dt = datetime.now(timezone.utc).replace(microsecond=0)
+    started_at = started_at_dt.isoformat()
 
+    deep_discovery = apply_capture_profile_mutate(config)
+    expand_run_workspace_if_needed(config, started_at_dt)
+
+    config.workspace.mkdir(parents=True, exist_ok=True)
     metadata_dir = config.metadata_dir
     metadata_dir.mkdir(parents=True, exist_ok=True)
 
@@ -406,6 +738,9 @@ def run_universal_pipeline(
     host_count = 0
     resolved_unique_url_count = 0
     skipped_source_host_urls = 0
+    skipped_invalid_input_urls = 0
+    skipped_duplicate_input_urls = 0
+    normalized_input_url_count = 0
     planned_download_count = 0
     download_success_count = 0
     download_failure_count = 0
@@ -418,8 +753,44 @@ def run_universal_pipeline(
         if stop_callback():
             raise PipelineStopped("Stopped by user.")
 
+    emit(
+        PipelineStage.CRAWL,
+        "run_paths",
+        workspace=str(config.workspace),
+        metadata_dir=str(metadata_dir),
+        download_root=str(config.download_root),
+        capture_profile=config.capture_profile,
+        structured_downloads=bool(config.structured_downloads),
+        run_scoped_outputs=bool(config.run_scoped_outputs),
+    )
+
     try:
-        urls = [item.strip() for item in config.urls if item.strip()]
+        stage_crawl_started = time.perf_counter()
+        if config.normalize_urls:
+            urls, skipped_invalid_input_urls, skipped_duplicate_input_urls = _prepare_input_urls(
+                config.urls,
+                strict_validation=config.strict_url_validation,
+            )
+        else:
+            urls = [item.strip() for item in config.urls if item.strip()]
+            if config.strict_url_validation:
+                invalid = [item for item in urls if not _is_http_url(item)]
+                if invalid:
+                    raise ValueError(f"Invalid URL(s): {', '.join(invalid[:3])}")
+            normalized_input_url_count = len(urls)
+
+        normalized_input_url_count = len(urls)
+        emit(
+            PipelineStage.CRAWL,
+            "url_input_summary",
+            url_count=normalized_input_url_count,
+            invalid_count=skipped_invalid_input_urls,
+            duplicate_count=skipped_duplicate_input_urls,
+        )
+
+        if not urls:
+            raise PipelineError("No valid URLs were provided after validation.")
+
         emit(
             PipelineStage.CRAWL,
             "phase",
@@ -428,6 +799,11 @@ def run_universal_pipeline(
         )
 
         def crawl_one(target_url: str) -> list[dict[str, Any]]:
+            def on_page(payload: dict[str, Any]) -> None:
+                if stop_callback():
+                    return
+                emit(PipelineStage.CRAWL, "crawl_page", **payload)
+
             sitemap_model = load_sitemap_payload(template_sitemap(target_url))
             return crawl_records(
                 sitemap_model=sitemap_model,
@@ -438,6 +814,14 @@ def run_universal_pipeline(
                 cookies_path=config.cookies,
                 nav_timeout_ms=config.nav_timeout_ms,
                 idle_timeout_ms=config.idle_timeout_ms,
+                java_script_enabled=not is_simptown_thread_url(target_url),
+                page_callback=on_page,
+                user_agent=config.user_agent or DEFAULT_USER_AGENT,
+                emit_browser_preview=config.emit_browser_preview,
+                chrome_cdp_url=config.chrome_cdp_url,
+                chrome_user_data_dir=config.chrome_user_data_dir,
+                chrome_profile_directory=config.chrome_profile_directory,
+                storage_state_save_path=config.storage_state_save_path,
             )
 
         crawl_jobs = max(1, config.crawl_jobs)
@@ -471,6 +855,8 @@ def run_universal_pipeline(
                         f"Failed to scrape {target_url}: {exc}",
                         **failure,
                     )
+                    if config.fail_fast:
+                        raise PipelineError(f"Stopping after crawl failure for {target_url}.") from exc
         else:
             with ThreadPoolExecutor(max_workers=crawl_jobs) as executor:
                 futures = {executor.submit(crawl_one, target_url): target_url for target_url in urls}
@@ -496,16 +882,28 @@ def run_universal_pipeline(
                             f"Failed to scrape {target_url}: {exc}",
                             **failure,
                         )
+                        if config.fail_fast:
+                            for pending in futures:
+                                if pending is not future:
+                                    pending.cancel()
+                            raise PipelineError(f"Stopping after crawl failure for {target_url}.") from exc
 
         write_json(scrape_output, all_records)
         if crawl_failures:
-            crawl_failures_output.write_text(json.dumps(crawl_failures, indent=2, ensure_ascii=True))
+            crawl_failures_sorted = sorted(crawl_failures, key=lambda item: (item.get("url", ""), item.get("error", "")))
+            crawl_failures_output.write_text(json.dumps(crawl_failures_sorted, indent=2, ensure_ascii=True))
 
         if not all_records:
+            if crawl_failures:
+                first_err = str(crawl_failures_sorted[0].get("error", "") or "").strip()
+                detail = f" {first_err[:400]}" if first_err else ""
+                raise PipelineError(
+                    f"No records were scraped; {len(crawl_failures)} URL(s) failed before extraction.{detail}"
+                )
             raise PipelineError("No records were scraped; stopping.")
 
         check_stop()
-        discovery = discover_urls(all_records)
+        discovery = discover_urls(all_records, deep=deep_discovery)
         source_mentions = len(discovery.sources)
         unique_url_count = len(discovery.unique_urls)
         host_count = len(discovery.host_unique_counts)
@@ -637,6 +1035,7 @@ def run_universal_pipeline(
                 failure_count=0,
                 total=0,
                 output_root=str(config.workspace),
+                run_manifest_output=str(run_manifest_output) if run_manifest_output else None,
             )
             return result
 
@@ -672,6 +1071,7 @@ def run_universal_pipeline(
                 failure_count=0,
                 total=0,
                 output_root=str(config.workspace),
+                run_manifest_output=str(run_manifest_output) if run_manifest_output else None,
             )
             return result
 
@@ -707,6 +1107,11 @@ def run_universal_pipeline(
             gallery_dl_args=config.gallery_args,
             yt_dlp_args=config.yt_dlp_args,
             bunkr_endpoints=config.bunkr_endpoints,
+            user_agent=config.user_agent or DEFAULT_USER_AGENT,
+            direct_timeout_sec=max(1, config.download_timeout_sec),
+            skip_existing=config.skip_existing_downloads,
+            structured_downloads=bool(config.structured_downloads),
+            completed_marker_root=config.download_root / "_meta",
         )
 
         def download_progress(payload: dict[str, Any]) -> None:
@@ -718,9 +1123,11 @@ def run_universal_pipeline(
         results = download_urls(download_items, download_config, progress_callback=progress_callback)
         results_sorted = sorted(results, key=lambda item: (item.success is False, item.host, item.url))
         download_results_output.write_text(json.dumps([item.as_dict() for item in results_sorted], indent=2, ensure_ascii=True))
+        write_download_index_manifests(metadata_dir, results_sorted)
 
         download_success_count = sum(1 for item in results_sorted if item.success)
         download_failure_count = len(results_sorted) - download_success_count
+        failed_urls = [item.url for item in results_sorted if not item.success][:500]
         emit(
             PipelineStage.DONE,
             "finished",
@@ -730,6 +1137,8 @@ def run_universal_pipeline(
             total=len(results_sorted),
             output_root=str(config.workspace),
             download_results_output=str(download_results_output),
+            run_manifest_output=str(run_manifest_output) if run_manifest_output else None,
+            failed_urls=failed_urls,
         )
 
         return PipelineResult(
@@ -766,13 +1175,18 @@ def run_universal_pipeline(
         raise
     finally:
         if run_manifest_output:
+            ended_at_dt = datetime.now(timezone.utc).replace(microsecond=0)
             manifest = {
                 "started_at": started_at,
-                "ended_at": _utc_timestamp(),
+                "ended_at": ended_at_dt.isoformat(),
+                "duration_seconds": int((ended_at_dt - started_at_dt).total_seconds()),
                 "status": status,
                 "workspace": str(config.workspace),
                 "config": _config_manifest(config),
                 "summary": {
+                    "normalized_input_url_count": normalized_input_url_count,
+                    "skipped_invalid_input_urls": skipped_invalid_input_urls,
+                    "skipped_duplicate_input_urls": skipped_duplicate_input_urls,
                     "record_count": len(all_records),
                     "crawl_failure_count": len(crawl_failures),
                     "source_mentions": source_mentions,
@@ -803,6 +1217,12 @@ def run_universal_pipeline(
 def _validate_config(config: PipelineConfig) -> None:
     if not any(item.strip() for item in config.urls):
         raise ValueError("At least one URL is required.")
+    if not config.workspace:
+        raise ValueError("workspace is required")
+    if not config.metadata_dir:
+        raise ValueError("metadata_dir is required")
+    if not config.download_root:
+        raise ValueError("download_root is required")
     if config.crawl_jobs < 1:
         raise ValueError("crawl_jobs must be >= 1")
     if config.download_workers < 1:
@@ -817,17 +1237,51 @@ def _validate_config(config: PipelineConfig) -> None:
         raise ValueError("nav_timeout_ms must be >= 1")
     if config.idle_timeout_ms < 1:
         raise ValueError("idle_timeout_ms must be >= 1")
+    if config.download_timeout_sec < 1:
+        raise ValueError("download_timeout_sec must be >= 1")
+
+
+def _prepare_input_urls(
+    raw_urls: Sequence[str],
+    strict_validation: bool,
+) -> tuple[list[str], int, int]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    invalid = 0
+    duplicates = 0
+    invalid_samples: list[str] = []
+
+    for raw in raw_urls:
+        value = (raw or "").strip()
+        if not value:
+            continue
+        if not _is_http_url(value):
+            invalid += 1
+            if len(invalid_samples) < 3:
+                invalid_samples.append(value)
+            continue
+        if value in seen:
+            duplicates += 1
+            continue
+        seen.add(value)
+        normalized.append(value)
+
+    if strict_validation and invalid:
+        preview = ", ".join(invalid_samples)
+        suffix = "..." if invalid > len(invalid_samples) else ""
+        raise ValueError(f"Invalid URL(s): {preview}{suffix}")
+
+    return normalized, invalid, duplicates
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _config_manifest(config: PipelineConfig) -> dict[str, Any]:
     payload = asdict(config)
-    for key in ("workspace", "metadata_dir", "download_root", "storage_state", "cookies"):
-        value = payload.get(key)
-        if value is None:
-            continue
-        payload[key] = str(value)
+    for key, value in list(payload.items()):
+        if isinstance(value, Path):
+            payload[key] = str(value)
     return payload
-
-
-def _utc_timestamp() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()

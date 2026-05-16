@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>simpscrape</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+  <div class="app-bg-vignette" aria-hidden="true"></div>
+
+  <div class="app">
+
+    <!-- ─── TOP BAR ─── -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">▣</span>
+        <span class="brand-name">simpscrape</span>
+      </div>
+
+      <div class="url-field">
+        <textarea id="urls-input" rows="1" placeholder="Paste URL(s), one per line..."></textarea>
+      </div>
+
+      <div class="topbar-actions">
+        <select id="sel-profile" class="select" title="Capture profile">
+          <option value="fast">Fast</option>
+          <option value="balanced" selected>Balanced</option>
+          <option value="deep">Deep</option>
+        </select>
+        <button class="btn-ghost" id="btn-import" type="button" title="Import URLs from file">Import</button>
+        <button class="btn-ghost" id="btn-cookies" type="button" title="Choose cookies file">Cookies</button>
+        <button class="btn-ghost" id="btn-settings" type="button" title="Settings" aria-label="Settings">⚙</button>
+        <button class="btn-ghost" id="btn-open-output" type="button" title="Open last run folder">Folder</button>
+        <button class="btn-ghost" id="btn-retry-failed" type="button" title="Paste failed URLs into Capture">Retry</button>
+        <button class="btn-primary" id="btn-start" type="button">Run</button>
+        <button class="btn-ghost" id="btn-stop" type="button">Stop</button>
+      </div>
+    </header>
+
+    <!-- ─── STAGE RAIL ─── -->
+    <div class="stage-rail" id="pipeline-strip">
+      <div class="stage" data-stage="crawl">
+        <span class="stage-mark"></span>
+        <span class="stage-label">Crawl</span>
+        <span class="stage-state" id="pipe-crawl">idle</span>
+      </div>
+      <div class="stage-sep"></div>
+      <div class="stage" data-stage="discover">
+        <span class="stage-mark"></span>
+        <span class="stage-label">Discover</span>
+        <span class="stage-state" id="pipe-discover">idle</span>
+      </div>
+      <div class="stage-sep"></div>
+      <div class="stage" data-stage="resolve">
+        <span class="stage-mark"></span>
+        <span class="stage-label">Resolve</span>
+        <span class="stage-state" id="pipe-resolve">idle</span>
+      </div>
+      <div class="stage-sep"></div>
+      <div class="stage" data-stage="download">
+        <span class="stage-mark"></span>
+        <span class="stage-label">Download</span>
+        <span class="stage-state" id="pipe-download">idle</span>
+      </div>
+      <div class="stage-sep"></div>
+      <div class="stage" data-stage="finalize">
+        <span class="stage-mark"></span>
+        <span class="stage-label">Finalize</span>
+        <span class="stage-state" id="pipe-finalize">idle</span>
+      </div>
+    </div>
+
+    <!-- ─── META STRIP ─── -->
+    <div class="meta-strip">
+      <div class="meta-progress">
+        <div class="bar-track"><div class="bar-fill" id="stage-bar"></div></div>
+        <div class="bar-track"><div class="bar-fill secondary" id="overall-bar"></div></div>
+      </div>
+      <div class="meta-stats">
+        <div class="stat"><span class="stat-key" id="stat-phase">Idle</span></div>
+        <div class="stat"><span class="stat-key">records</span><span class="stat-val" id="stat-records">0</span></div>
+        <div class="stat"><span class="stat-key">downloads</span><span class="stat-val" id="stat-downloads">0 / 0</span></div>
+        <div class="stat"><span class="stat-key">hosts</span><span class="stat-val" id="stat-hosts">0</span></div>
+        <div class="stat path-stat" id="path-hint"><span class="stat-key">out</span><span class="stat-val mono" id="path-display">—</span></div>
+      </div>
+    </div>
+
+    <!-- ─── WORKSPACE: preview | activity ─── -->
+    <main class="workspace" id="main-split">
+      <section class="preview-pane">
+        <header class="pane-head">
+          <h3 class="pane-title">Live Browser</h3>
+          <span class="pane-state" id="preview-state">idle</span>
+        </header>
+        <div class="preview-meta">
+          <div class="preview-page" id="preview-page">Waiting for crawl</div>
+          <div class="preview-url mono" id="preview-url">No page loaded yet.</div>
+        </div>
+        <div class="preview-frame">
+          <div class="preview-chrome">
+            <span class="preview-chip" id="preview-chip">standby</span>
+          </div>
+          <div class="preview-canvas">
+            <img id="preview-image" alt="Live Playwright crawl preview">
+            <div class="preview-empty" id="preview-empty">Preview frames will appear here during crawl.</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="log-pane" id="log-dock">
+        <header class="pane-head">
+          <h3 class="pane-title">Activity</h3>
+          <div class="pane-tools">
+            <input type="search" id="log-search" class="select" placeholder="Search log…">
+            <button class="btn-ghost btn-icon" id="btn-dock-toggle" type="button" title="Dock bottom" aria-label="Toggle dock">⤢</button>
+          </div>
+        </header>
+        <div class="log-chips" id="log-chips">
+          <button type="button" class="chip active" data-filter="all">all</button>
+          <button type="button" class="chip" data-filter="crawl">crawl</button>
+          <button type="button" class="chip" data-filter="resolve">resolve</button>
+          <button type="button" class="chip" data-filter="download">download</button>
+          <button type="button" class="chip" data-filter="error">error</button>
+          <button type="button" class="chip" data-filter="warning">warning</button>
+        </div>
+        <div class="log-toolbar">
+          <label class="toggle-inline"><input type="checkbox" id="log-follow" checked> Follow</label>
+          <label class="toggle-inline"><input type="checkbox" id="log-pause"> Pause</label>
+          <label class="toggle-inline"><input type="checkbox" id="chk-compact"> Compact</label>
+          <span class="log-toolbar-sep"></span>
+          <button class="btn-ghost btn-tiny" id="log-clear" type="button">Clear</button>
+          <button class="btn-ghost btn-tiny" id="log-copy" type="button">Copy</button>
+          <button class="btn-ghost btn-tiny" id="log-export" type="button">Export</button>
+        </div>
+        <input type="range" id="log-opacity" min="55" max="95" value="78" hidden>
+        <div class="activity-feed" id="activity-feed"></div>
+      </aside>
+    </main>
+
+    <!-- ─── RESULTS DRAWER ─── -->
+    <section class="drawer" id="results-drawer">
+      <header class="drawer-head">
+        <button class="drawer-toggle btn-ghost" id="drawer-toggle" type="button" aria-expanded="false">
+          <span class="drawer-caret">▸</span>
+          <span class="drawer-title">Downloads</span>
+          <span class="drawer-stat" id="drawer-stat">0 / 0</span>
+        </button>
+        <span class="drawer-fail" id="fail-summary"></span>
+      </header>
+      <div class="drawer-body">
+        <div class="hosts-list" id="hosts-list">
+          <div class="host-item active" data-host="all">all hosts</div>
+        </div>
+        <div class="download-rows" id="download-rows"></div>
+      </div>
+    </section>
+
+    <!-- Hidden compatibility shims so legacy view-switching code in app.js
+         that targets these IDs / classes is a safe no-op. -->
+    <div class="legacy-views" hidden>
+      <div class="view" id="view-home"></div>
+      <div class="view" id="view-capture"></div>
+      <div class="view" id="view-downloads"></div>
+      <button class="btn-ghost" id="btn-start-capture" hidden type="button"></button>
+    </div>
+  </div>
+
+  <!-- ─── COOKIES MODAL ─── -->
+  <div class="modal-backdrop" id="cookies-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cookies-modal-title">
+      <header class="modal-header">
+        <h2 id="cookies-modal-title">Sign in with cookies</h2>
+        <button class="btn-ghost modal-close" id="cookies-modal-close" type="button" aria-label="Close">×</button>
+      </header>
+      <div class="modal-body">
+        <p class="modal-lede">
+          simpscrape needs cookies from your logged-in browser session to access content.
+          Once loaded, the auto-DMCA handler will dismiss the click-to-verify gate.
+        </p>
+        <ol class="modal-steps">
+          <li>Log into the target site in your normal browser.</li>
+          <li>Export cookies as Netscape <code>cookies.txt</code> or Playwright <code>storage_state.json</code>.</li>
+          <li>Pick that file below — simpscrape remembers it for next time.</li>
+        </ol>
+        <div class="modal-file-row">
+          <button class="btn-primary" id="cookies-modal-pick" type="button">Choose cookies file…</button>
+          <span class="modal-file-path mono" id="cookies-modal-path">No file selected</span>
+        </div>
+      </div>
+      <footer class="modal-footer">
+        <button class="btn-ghost" id="cookies-modal-skip" type="button">Skip for this run</button>
+        <button class="btn-primary" id="cookies-modal-continue" type="button" disabled>Continue</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ─── SETTINGS MODAL ─── -->
+  <div class="modal-backdrop" id="settings-modal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <header class="modal-header">
+        <h2 id="settings-modal-title">Settings</h2>
+        <button class="btn-ghost modal-close" id="settings-modal-close" type="button" aria-label="Close">×</button>
+      </header>
+      <div class="modal-body">
+        <section class="settings-section">
+          <h4 class="settings-heading">Run</h4>
+          <div class="settings-grid">
+            <label class="field">
+              <span>Performer</span>
+              <input type="text" id="inp-performer" placeholder="folder name…">
+            </label>
+            <label class="field">
+              <span>Delay (ms)</span>
+              <input type="number" id="inp-delay" value="250" min="0">
+            </label>
+            <label class="field">
+              <span>Max Pages</span>
+              <input type="number" id="inp-max-pages" placeholder="all" min="1">
+            </label>
+            <label class="field">
+              <span>Crawl Jobs</span>
+              <input type="number" id="inp-crawl-jobs" value="2" min="1">
+            </label>
+            <label class="field">
+              <span>Download Workers</span>
+              <input type="number" id="inp-download-workers" value="8" min="1">
+            </label>
+            <label class="field">
+              <span>Resolve Workers</span>
+              <input type="number" id="inp-resolve-workers" value="12" min="1">
+            </label>
+            <label class="field">
+              <span>Attempts</span>
+              <input type="number" id="inp-attempts" value="3" min="1">
+            </label>
+            <label class="field">
+              <span>Retry Delay (s)</span>
+              <input type="number" id="inp-retry-delay" value="3" min="0" step="0.5">
+            </label>
+          </div>
+          <div class="settings-toggles">
+            <label class="toggle-inline"><input type="checkbox" id="chk-headless" checked> Headless</label>
+            <label class="toggle-inline"><input type="checkbox" id="chk-resolve" checked> Resolve Links</label>
+            <label class="toggle-inline"><input type="checkbox" id="chk-source-hosts"> Same-Host Links</label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4 class="settings-heading">Authentication</h4>
+          <div class="settings-grid">
+            <label class="field field-wide">
+              <span>Cookies file</span>
+              <input type="text" id="inp-cookies-path" placeholder="auto-detect (use the Cookies button to pick)">
+            </label>
+            <label class="field field-wide">
+              <span>Storage state</span>
+              <input type="text" id="inp-storage-state" placeholder="auto-detect">
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4 class="settings-heading">Chrome session</h4>
+          <div class="settings-toggles">
+            <label class="toggle-inline"><input type="checkbox" id="chk-use-chrome"> Attach to live Chrome (CDP)</label>
+          </div>
+          <div class="settings-grid">
+            <label class="field field-wide">
+              <span>CDP URL</span>
+              <input type="text" id="inp-chrome-cdp-url" placeholder="http://127.0.0.1:9222">
+            </label>
+            <label class="field field-wide">
+              <span>User data dir</span>
+              <input type="text" id="inp-chrome-user-data-dir" placeholder="optional fallback if Chrome is closed">
+            </label>
+            <label class="field">
+              <span>Profile</span>
+              <input type="text" id="inp-chrome-profile-directory" value="Default" placeholder="Default">
+            </label>
+          </div>
+        </section>
+      </div>
+      <footer class="modal-footer">
+        <button class="btn-primary" id="settings-modal-done" type="button">Done</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -13,6 +13,8 @@ ENCODED_URL_PATTERN = re.compile(r"https?%3A%2F%2F[^\s\"'<>\\]+", re.IGNORECASE)
 
 MEDIA_FIELDS = ("links", "images", "videos", "iframes", "embeds", "attachments")
 TEXT_FIELDS = ("post_content", "quotes")
+# Extra string fields scanned only in "deep" capture mode (broader URL harvesting).
+DEEP_TEXT_FIELDS = ("title", "signature", "user_title", "custom_fields")
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,7 @@ class DiscoveryResult:
         return [asdict(source) for source in self.sources]
 
 
-def discover_urls(records: List[Dict[str, Any]]) -> DiscoveryResult:
+def discover_urls(records: List[Dict[str, Any]], *, deep: bool = False) -> DiscoveryResult:
     sources: List[UrlSource] = []
     unique_urls: List[str] = []
     seen_urls: set[str] = set()
@@ -100,13 +102,39 @@ def discover_urls(records: List[Dict[str, Any]]) -> DiscoveryResult:
                     host_unique_counts[host] += 1
                     host_urls[host].append(normalized)
 
+        if deep:
+            for source_field in DEEP_TEXT_FIELDS:
+                raw_value = record.get(source_field)
+                for raw_url in _iter_candidate_urls(raw_value, allow_regex_fallback=True):
+                    normalized = _normalize_url(raw_url, base_url)
+                    if not normalized:
+                        continue
+                    host = normalized_host(normalized)
+                    source = UrlSource(
+                        url=normalized,
+                        host=host,
+                        source_field=f"deep:{source_field}",
+                        post_id=_to_optional_str(record.get("post_id")),
+                        post_author=_to_optional_str(record.get("post_author")),
+                        post_date=_to_optional_str(record.get("post_date")),
+                        thread_url=_to_optional_str(record.get("web_scraper_start_url")),
+                    )
+                    sources.append(source)
+                    host_counts[host] += 1
+                    if normalized not in seen_urls:
+                        seen_urls.add(normalized)
+                        unique_urls.append(normalized)
+                        url_hosts[normalized] = host
+                        host_unique_counts[host] += 1
+                        host_urls[host].append(normalized)
+
     return DiscoveryResult(
         sources=sources,
         unique_urls=unique_urls,
         url_hosts=url_hosts,
         host_counts=dict(host_counts),
         host_unique_counts=dict(host_unique_counts),
-        host_urls=dict(host_urls),
+        host_urls={host: sorted(urls) for host, urls in host_urls.items()},
     )
 
 
@@ -208,6 +236,9 @@ def _normalize_url(raw_url: str, base_url: str) -> Optional[str]:
     host = normalized_host(url)
     if not _is_valid_host(host):
         return None
+    if parsed.fragment:
+        parsed = parsed._replace(fragment="")
+        url = parsed.geturl()
     return url
 
 
@@ -220,22 +251,46 @@ def _to_optional_str(value: Any) -> Optional[str]:
 
 def _decode_redirect_target(parsed_url) -> Optional[str]:
     path = (parsed_url.path or "").lower()
-    if "redirect" not in path:
+    if not _is_redirect_wrapper_path(path):
         return None
     query = parse_qs(parsed_url.query)
-    encoded = query.get("to", [None])[0]
-    if not encoded:
+    for key in ("to", "url", "u", "target", "dest", "destination"):
+        decoded = _decode_redirect_query_value(query.get(key, [None])[0])
+        if decoded:
+            return decoded
+    return None
+
+
+def _is_redirect_wrapper_path(path: str) -> bool:
+    if not path:
+        return False
+    return (
+        "redirect" in path
+        or "link-confirmation" in path
+        or path == "/goto"
+        or path.startswith("/goto/")
+        or path == "/out"
+        or path.endswith("/out/")
+    )
+
+
+def _decode_redirect_query_value(raw_value: Optional[str]) -> Optional[str]:
+    if not raw_value:
         return None
-    decoded_query = unquote(encoded).strip()
+    decoded_query = unquote(str(raw_value)).strip()
     if decoded_query.startswith(("http://", "https://")):
         return decoded_query
-    padded = decoded_query + "=" * (-len(decoded_query) % 4)
-    try:
-        decoded_base64 = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8", "ignore").strip()
-    except Exception:
-        return None
-    if decoded_base64.startswith(("http://", "https://")):
-        return decoded_base64
+
+    # Some forums store outbound targets as base64 and may hand query parsers spaces in place of '+'.
+    normalized = decoded_query.replace(" ", "+")
+    padded = normalized + "=" * (-len(normalized) % 4)
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            decoded_base64 = decoder(padded.encode("utf-8")).decode("utf-8", "ignore").strip()
+        except Exception:
+            continue
+        if decoded_base64.startswith(("http://", "https://")):
+            return decoded_base64
     return None
 
 

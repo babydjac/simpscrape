@@ -1,0 +1,172 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 360px;
+  background: linear-gradient(180deg, #f7f3ed 0%, #efe9de 100%);
+  color: #1f1a14;
+  font: 13px/1.45 "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+.popup {
+  padding: 14px;
+}
+
+.hero {
+  margin-bottom: 12px;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 10px;
+  color: #7a5c3b;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+  line-height: 1.1;
+  margin-bottom: 6px;
+}
+
+.sub {
+  color: #54473a;
+}
+
+.card {
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(92, 69, 42, 0.16);
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 10px 28px rgba(59, 38, 14, 0.08);
+}
+
+.card-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+h2 {
+  font-size: 14px;
+}
+
+.mono {
+  font-family: "SF Mono", "Menlo", monospace;
+  word-break: break-word;
+}
+
+.muted {
+  color: #6c6255;
+}
+
+.status {
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.status.ok {
+  background: #e5f7eb;
+  color: #18592b;
+}
+
+.status.error {
+  background: #ffe8e4;
+  color: #842c1a;
+}
+
+.status.neutral {
+  background: #efe7dc;
+  color: #5c4e3d;
+}
+
+.actions,
+#manual-form,
+.site-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+input,
+button {
+  border-radius: 10px;
+  border: 1px solid rgba(92, 69, 42, 0.18);
+  font: inherit;
+}
+
+input {
+  width: 100%;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+button {
+  cursor: pointer;
+  padding: 9px 12px;
+  background: #1f1a14;
+  color: #fff8f0;
+}
+
+button.ghost {
+  background: transparent;
+  color: #1f1a14;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hint {
+  margin-top: 8px;
+  color: #6c6255;
+  font-size: 12px;
+}
+
+.site-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.site-list.empty {
+  color: #6c6255;
+}
+
+.site-item {
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 251, 246, 0.92);
+  border: 1px solid rgba(92, 69, 42, 0.12);
+}
+
+.site-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.site-origin {
+  font-family: "SF Mono", "Menlo", monospace;
+  font-size: 12px;
+}
+
+.site-meta {
+  margin-top: 6px;
+  color: #5b5045;
+  font-size: 12px;
+}

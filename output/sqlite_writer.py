@@ -15,6 +15,8 @@ def _flatten_value(value: Any) -> str:
 def write_sqlite(path: Path, records: List[Dict[str, Any]], table: str = "records") -> None:
     if not records:
         return
+    if path.exists():
+        path.unlink()
 
     columns = list(records[0].keys())
     placeholders = ", ".join("?" for _ in columns)

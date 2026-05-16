@@ -8,16 +8,22 @@ __pycache__/
 venv/
 env/
 
+# Node / Electron
+gui/node_modules/
+node_modules/
+
 # macOS
 .DS_Store
 
 # IDE/editor
 .idea/
 .vscode/
+.cursor/
 
 # Local auth/session artifacts
 cooks.txt
-simpcity-state.json
+*-state.json
+.simpscrape_gui_settings.json
 
 # Runtime outputs
 simp-output/
@@ -26,3 +32,6 @@ universal-output/
 downloads/
 *.sqlite
 *.db
+
+# Local backups
+backups/

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "SimpScrape Auth Bridge",
+  "version": "0.1.0",
+  "description": "Keeps SimpScrape logged in with the same sites you use in Chrome.",
+  "permissions": [
+    "cookies",
+    "nativeMessaging",
+    "storage",
+    "tabs"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "SimpScrape Auth Bridge",
+    "default_popup": "popup.html"
+  }
+}
