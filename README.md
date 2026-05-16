@@ -39,7 +39,7 @@ attach options:
 ## Quick start
 
 ```bash
-git clone https://github.com/youruser/simpscrape.git
+git clone https://github.com/babydjac/simpscrape.git
 cd simpscrape
 python3 -m venv .venv
 source .venv/bin/activate
