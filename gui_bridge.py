@@ -184,7 +184,33 @@ def build_config(raw: dict[str, Any]) -> PipelineConfig:
 
     cookies = _resolve_cookies_path(raw)
     storage_state = _resolve_storage_state_path(raw)
-    if storage_state is None:
+    # If the user just picked / refreshed a cookies.txt and an older storage_state
+    # is still on disk for the same host, the stale storage_state's cookies
+    # (XenForo session prefix, ddg challenge state, …) win in Playwright and
+    # bounce the user back to /login. Treat a newer cookies.txt as "I just
+    # logged in" and rebuild storage_state from it. The fresh state is written
+    # back to the same path, and the post-dismissal save in CrawlController
+    # keeps it up to date afterwards.
+    if (
+        cookies
+        and storage_state
+        and cookies.exists()
+        and storage_state.exists()
+        and cookies.stat().st_mtime > storage_state.stat().st_mtime
+    ):
+        rebuilt = _resolve_storage_state_from_cookies(raw, cookies)
+        if rebuilt is not None:
+            emit({
+                "type": "log",
+                "stage": "system",
+                "level": "info",
+                "message": (
+                    f"Cookies file is newer than storage state; rebuilt "
+                    f"{rebuilt.name} from {cookies.name}."
+                ),
+            })
+            storage_state = rebuilt
+    elif storage_state is None:
         storage_state = _resolve_storage_state_from_cookies(raw, cookies)
     storage_state_save_path = _resolve_storage_state_save_path(raw, storage_state)
 
