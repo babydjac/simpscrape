@@ -15,6 +15,10 @@ Playwright preview of the page being crawled and a real-time activity feed.
 The crawler ships with an auto-DMCA / consent-gate dismisser so click-to-verify
 interstitials (e.g. simpcity.cr) don't stop a run.
 
+## Demo
+
+<img src="demo/demo.gif" alt="simpscrape end-to-end demo" width="900">
+
 ## Screenshots
 
 Idle state — paste a URL, pick a profile, hit Run:
